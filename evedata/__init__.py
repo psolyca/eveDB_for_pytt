@@ -259,6 +259,7 @@ def create_db():
     if getResourcesFile():    
         print("Creating game DB")
         eveDB = EveDB.getInstance()
+        eveDB.execute("PRAGMA page_size = 4096")
         eveDB.create(eveTables)
 
         populate()
