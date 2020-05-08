@@ -1,0 +1,33 @@
+env:
+  global:
+    - secure: "dPJPsFU0QeFPXVfYWMaHLLDFghYW91xUX7/39yc2ar+uHxrIEHIoBuVBtXUfZoqDT4BEnePjSXm6GQ9Mhen3cszJTqDstZHRHqq0TFmHqEw91aFCOSYUxzVWR02bKba5+Uiv9T1LpDyVBf50uTlkLxL2kHEAyNSDVt++WQuXcHniQcbm5Fw55EsH5nwsJodLA/B/fkdbvF5noRSRIBTGFz3jOHgm7RfkKonPGXx0p8w0YAJlwQr8l7j9h9f/1OT4cIDFeDoKM9ogO8MkSyHtG5gFi5AJdNBl4sLN9QuG6fqnj+4hdEq9jMnNkDbculmbcG8s8kTvpwRb6a3UMecle4DyR2u0Ov/YlovmwgqZ8IA37333E2q3TBvF7eq7zNLFI6JjaWXOkjB9H0PyOrSczpIhmk2Rrl4dXlTA0b+BiFgg4hOZzaZcJlxu9qZnWYf+JCzhmlJo8Lo5Vs+fDfZSUMnuLP72Fb/ibGl4hR3RVB8X4vg+bEVqmNOuR/ew/AKyDkN8B4Q8umAFQ9XGhe5FFeDTMEkmN4+ITXAV2Z2FpwdS/kRvUBK7UlzFVSnXYbNPcUU975Lvig7J9lOp3Jnbkyt67p7pXIjAZ04vlu9vbS/3MvgXwwSg56oFo5RVNXTbbnREr2XAyvF0cWYSe9Z/cuhUHimlHU2rjAApIgoevyc="
+language: python
+python:
+  - "3.7"
+install:
+  - pip install python-dateutil requests PyYAML
+before_script:
+  - |
+
+       declare -r SSH_FILE="$(mktemp -u $HOME/.ssh/XXXXX)"
+
+       # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+       # Decrypt the file containing the private key
+
+       openssl aes-256-cbc \
+         -K $encrypted_8ebb1ef83f64_key \
+         -iv $encrypted_8ebb1ef83f64_iv \
+         -in ".travis/github_deploy_key.enc" \
+         -out "$SSH_FILE" -d
+
+       # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+       # Enable SSH authentication
+
+       chmod 600 "$SSH_FILE" \
+         && printf "%s\n" \
+              "Host github.com" \
+              "  IdentityFile $SSH_FILE" \
+              "  LogLevel ERROR" >> ~/.ssh/config
+
+script:
+  - ./init.sh
