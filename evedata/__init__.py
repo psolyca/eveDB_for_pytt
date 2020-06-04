@@ -36,32 +36,10 @@ language = "en"
 sdeVersion = None
 gameDB = None
 
-def check_db():
-    global sdeVersion
-    global gameDB
-
-    gameDB = getGameDB()
-
-    if not os.path.exists(gameDB):
-        create_db()
-        return
-    print("Checking last version of SDE...")
-    r = requests.head(SDE_LINK)
-    resourcesStamp = int(parse(r.headers["Last-Modified"]).timestamp())
-    eveDB = EveDB.getInstance()
-    sdeVersion = eveDB.selectone("metadata", where={"field_name": "dump_time"})
-    if not sdeVersion:
-        print("Problem in DB... Rebuilding the DB")
-        create_db()
-        return
-    if (resourcesStamp != int(sdeVersion["field_value"])):
-        print("Not last version... Rebuilding the DB")
-        create_db()
-        return
-    print("Last version.")
-
 
 def create_db():
+    global gameDB
+
     from zipfile import ZipFile
 
     import yaml
@@ -72,15 +50,14 @@ def create_db():
         from yaml import Loader
         print('Using Python Loader')
 
+    gameDB = getGameDB()
     resourcesZip = None
     eveDB = EveDB.getInstance()
 
     def _readYaml(file):
-        nonlocal resourcesZip
         return yaml.load(resourcesZip.read(file), Loader = Loader)
 
     def _getFileList(path, zone):
-        nonlocal resourcesZip
         return [x for x in resourcesZip.namelist() if path in x and zone in x]
 
     def getResourcesFile():
@@ -91,17 +68,13 @@ def create_db():
         if resourcesFile.ok:
             resourcesZip = ZipFile(BytesIO(resourcesFile.content))
             sdeVersion = int(parse(resourcesFile.headers["Last-Modified"]).timestamp())
+            print("sdeVersion : {}".format(sdeVersion))
             return True
         else:
             print("Not able to download resources file from EVE")
             return False
-        resourcesZip = ZipFile("J:\Téléchargements\eve\sde.zip")
-        sdeVersion = int(os.path.getmtime("J:\Téléchargements\eve\sde.zip"))
-        return True
 
     def populate():
-        nonlocal eveDB
-        global sdeVersion
 
         print("Populating invNames")
         eveDB.insertmany("invNames",
@@ -127,6 +100,7 @@ def create_db():
             popRegion(regionFile)
         
         print("Populating metadata")
+        print("sdeVersion : {}".format(sdeVersion))
         eveDB.insert("metadata",
             ("field_name", "field_value"),
             ("dump_time", sdeVersion)
@@ -137,8 +111,7 @@ def create_db():
         eveDB.commit()
 
     def popRegion(regionFile):
-        nonlocal eveDB
-        head, tail = os.path.split(regionFile)
+        head, _ = os.path.split(regionFile)
         region = _readYaml(regionFile)
         regionName = eveDB.selectone("invNames",
             where={"itemID": region['regionID']}
@@ -154,8 +127,7 @@ def create_db():
             popConstellation(constellationFile, region)
 
     def popConstellation(constellationFile, region):
-        nonlocal eveDB
-        head, tail = os.path.split(constellationFile)
+        head, _ = os.path.split(constellationFile)
         constellation = _readYaml(constellationFile)
 
         constellationName = eveDB.selectone("invNames",
@@ -174,7 +146,6 @@ def create_db():
             popSolarSystem(systemFile, constellation, region)
 
     def popSolarSystem(systemFile, constellation, region):
-        nonlocal eveDB
         system = _readYaml(systemFile)
         systemName = eveDB.selectone("invNames",
             where={"itemID": system['solarSystemID']}
@@ -191,16 +162,15 @@ def create_db():
         )
         popStargates(system['stargates'], system, constellation, region)
 
-        for planetID, planetData in system['planets'].items():
+        for _, planetData in system['planets'].items():
             if 'npcStations' in planetData:
                 popStation(planetData['npcStations'], system, constellation, region)
             if 'moons' in planetData:
-                for moonID, moonData in planetData['moons'].items():
+                for _, moonData in planetData['moons'].items():
                     if 'npcStations' in moonData:
                         popStation(moonData['npcStations'], system, constellation, region)
 
     def popStargates(stargates, system, constellation, region):
-        nonlocal eveDB
         print("                Populating mapStargates and mapDenormalize")
         for stargateID, stargateInfo in stargates.items():
             eveDB.insert("mapStargates",
@@ -215,7 +185,6 @@ def create_db():
             )
 
     def popStation(stationData, system, constellation, region):
-        nonlocal eveDB
         for stationID, stationInfo in stationData.items():
             stationName = eveDB.selectone("invNames",
             where={"itemID": stationID}
@@ -234,7 +203,6 @@ def create_db():
             )
 
     def popMapJumps():
-        nonlocal eveDB
         print("Populating mapJumps")
         stargateJumps = eveDB.selectall("mapStargates")
         for jump in stargateJumps:

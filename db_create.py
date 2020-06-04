@@ -23,7 +23,7 @@
 import sys
 
 from config import defPaths
-from evedata import check_db
+from evedata import create_db
 
 
 if __name__ == "__main__":
@@ -31,6 +31,6 @@ if __name__ == "__main__":
     print("Starting pytt DB creation")
     defPaths()
 
-    check_db()
+    create_db()
     sys.exit()
 
