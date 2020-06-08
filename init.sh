@@ -1,8 +1,9 @@
 #!/bin/bash
 
 link="https://eve-static-data-export.s3-eu-west-1.amazonaws.com/tranquility/sde.zip"
-currentrev=$(curl -s -v -X HEAD $link 2>&1 | grep '< Last-Modified:' | awk -F ':' '{print $2":"$3":"$4}' | xargs -0 date +"%Y%m%d" -d)
-echo 'Current SDE revision :' $currentrev
+daterev=$(curl -s -v -X HEAD $link 2>&1 | grep '< Last-Modified:' | awk -F ':' '{print $2":"$3":"$4}')
+currentrev=$(echo $daterev | xargs -0 date +"%s" -d)
+echo 'Current SDE revision of ' $daterev ' -> ' $currentrev
 if [[ $(git log -1 --pretty=%B) == *"$currentrev"* ]]
 then
     echo "Already lastest SDE commited"
