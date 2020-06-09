@@ -1,0 +1,13 @@
+[Unit]
+Description=Check Eve resources trigger timer
+
+[Timer]
+# Trigger a check at 11:10, 11:20 and 11:30 following DT
+OnCalendar=*-*-* 11:10,20,30:00 UTC
+# Trigger a check between 12 and 20 UTC in case the resources file change (It could happen)
+OnCalendar=*-*-* 12..20:00:00 UTC
+Persistent=true
+Unit=check_eve_res.service
+
+[Install]
+WantedBy=basic.target

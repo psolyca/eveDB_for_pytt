@@ -1,0 +1,8 @@
+[Unit]
+Description=Check for last revision of Eve Resources
+
+[Service]
+ExecStart=/home/user/repositories/check_eve_res.sh
+
+[Install]
+WantedBy=default.target
