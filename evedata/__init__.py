@@ -23,22 +23,22 @@ import os
 import os.path
 import sys
 import requests
-from io import BytesIO
+import io
 
 from dateutil.parser import parse
 
-from config import getGameDB
-from service.queryDB import EveDB
+from config import getEveDBPath, getpyttRoot
+from service.queryDB import dbInstances
 from evedata.tables import eveTables
 
 SDE_LINK = "https://eve-static-data-export.s3-eu-west-1.amazonaws.com/tranquility/sde.zip"
 language = "en"
 sdeVersion = None
-gameDB = None
+eveDBPath = None
 
 
 def create_db():
-    global gameDB
+    global eveDBPath
 
     from zipfile import ZipFile
 
@@ -50,12 +50,14 @@ def create_db():
         from yaml import Loader
         print('Using Python Loader')
 
-    gameDB = getGameDB()
+    eveDBPath = getEveDBPath()
     resourcesZip = None
-    eveDB = EveDB.getInstance()
+    eveDB = dbInstances["EveDB"]
 
     def _readYaml(file):
-        return yaml.load(resourcesZip.read(file), Loader = Loader)
+        yamlfile = resourcesZip.read(file)
+        test = yaml.load(yamlfile, Loader = Loader)
+        return test
 
     def _getFileList(path, zone):
         return [x for x in resourcesZip.namelist() if path in x and zone in x]
@@ -63,26 +65,46 @@ def create_db():
     def getResourcesFile():
         nonlocal resourcesZip
         global sdeVersion
-        print("Downloading resources file from EVE")
-        resourcesFile = requests.get(SDE_LINK)
-        if resourcesFile.ok:
-            resourcesZip = ZipFile(BytesIO(resourcesFile.content))
-            sdeVersion = int(parse(resourcesFile.headers["Last-Modified"]).timestamp())
+        sdeFile = os.path.join(getpyttRoot(), "sde.zip")
+        if os.path.isfile(sdeFile):
+            resourcesZip = ZipFile(sdeFile)
+            resourcesHeader = requests.head(SDE_LINK)
+            sdeVersion = int(parse(resourcesHeader.headers["Last-Modified"]).timestamp())
             print("sdeVersion : {}".format(sdeVersion))
             return True
         else:
-            print("Not able to download resources file from EVE")
-            return False
+            print("Downloading resources file from EVE")
+            resourcesFile = requests.get(SDE_LINK)
+            if resourcesFile.ok:
+                resourcesZip = ZipFile(io.BytesIO(resourcesFile.content))
+                sdeVersion = int(parse(resourcesFile.headers["Last-Modified"]).timestamp())
+                print("sdeVersion : {}".format(sdeVersion))
+                return True
+            else:
+                print("Not able to download resources file from EVE")
+                return False
 
     def populate():
 
         print("Populating invNames")
-        eveDB.insertmany("invNames",
-            ("itemID", "itemName"),
-            (_readYaml('sde/bsd/invNames.yaml'))
-        )
+        # TODO : Add consistencies with ESI data
+        # Check if all names are in the SDE (should not be !)
+        # Get only 
+        # 10,000,000	11,000,000	New Eden regions
+        # 20,000,000	21,000,000	New Eden constellations
+        # 30,000,000	31,000,000	New Eden solar systems
+        # 50,000,000	60,000,000	Stargates
+        # 60,000,000	61,000,000	Stations created by CCP
+        # eveDB.insertmany("invNames",
+        #     ("itemID", "itemName"),
+        #     (_readYaml('sde/bsd/invNames.yaml'))
+        # )
+        for item in _readYaml('sde/bsd/invNames.yaml'):
+            print(item)
 
         print("Populating invTypes")
+        # TODO : Add consistencies with ESI type
+        # Check if all types are in the SDE (should not be !)
         for typeID, typeData in _readYaml('sde/fsd/typeIDs.yaml').items():
             if (typeData.get("marketGroupID")):
                 description = typeData.get('description', {}).get(language, '')
@@ -221,13 +243,12 @@ def create_db():
                 )
             )
 
-    if os.path.isfile(gameDB):
+    if os.path.isfile(eveDBPath):
         eveDB.close()
-        os.remove(gameDB)
-    if getResourcesFile():    
+        os.remove(eveDBPath)
+    if getResourcesFile():
         print("Creating game DB")
-        eveDB = EveDB.getInstance()
-        eveDB.execute("PRAGMA page_size = 4096")
+        eveDB.open()
         eveDB.create(eveTables)
 
         populate()
@@ -236,7 +257,7 @@ def create_db():
         eveDB.drop("invNames")
         eveDB.drop("mapStargates")
 
-        eveDB.execute("VACUUM")
+        eveDB.vacuum()
         resourcesZip.close()
 
 

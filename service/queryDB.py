@@ -20,6 +20,160 @@
 # ==============================================================================
 
 import sqlite3
+from threading import Thread, Event, Lock
+from multiprocessing import Process, Manager
+import uuid
+import os
+import os.path
+
+dbNames = ["EveDB"]
+dbClasses = {}
+dbInstances = {}
+dbCommunicationCanals = {}
+
+def createDBClasses(communicationCanals=None):
+    global dbClasses
+
+    def DB_init(self, comCanal):
+        self.wInQueue = comCanal[0]
+        self.wOutDict = comCanal[1]
+        self.rInQueue = comCanal[2]
+        self.rOutDict = comCanal[3]
+
+    for name in dbNames:
+        dbClasses[name] = type(
+            name,
+            (QueryDB,),
+            {"__init__": DB_init}
+        )
+    createCommunicationCanals(communicationCanals)
+
+def createCommunicationCanals(communicationCanals):
+    global dbCommunicationCanals
+    if communicationCanals is None:
+        ioManager = Manager()
+        for name in dbNames:
+            # Communication canals are write input, write output, read input, read output
+            comCanal = [ioManager.Queue(), ioManager.dict(), ioManager.Queue(), ioManager.dict()]
+            dbCommunicationCanals[name] = comCanal
+    else:
+        dbCommunicationCanals = communicationCanals
+    createDBInstances(dbCommunicationCanals)
+
+def createDBInstances(communicationCanals):
+    global dbInstances
+    for name in dbNames:
+        dbInstances[name] = dbClasses[name](communicationCanals[name])
+
+def startDBThreads(*communicationCanals):
+    from config import getDBPathes
+    for name in dbNames:
+        comCanal = communicationCanals[0][name]
+        wInQueue = comCanal[0]
+        wOutDict = comCanal[1]
+        rInQueue = comCanal[2]
+        rOutDict = comCanal[3]
+        t = DBWorkerThread(getDBPathes()[name], wInQueue, wOutDict, "{}WriteThread".format(name))
+        t.run()
+        t = DBWorkerThread(getDBPathes()[name], rInQueue, rOutDict, "{}ReadThread".format(name))
+        t.run()
+
+def startDBProcess():
+    createDBClasses()
+    p = Process(target=startDBThreads, args=(dbCommunicationCanals,), name="DBProcess")
+    p.start()
+
+
+class DBWorkerThread():
+    '''SQLite thread safe object.
+
+    Inspired by https://github.com/dashawn888/sqlite3worker/blob/master/sqlite3worker.py
+    and  https://stackoverflow.com/questions/10415028/how-can-i-recover-the-return-value-of-a-function-passed-to-multiprocessing-proce
+    '''
+    def __init__(self, DBPath, inQueue, outDict, name="MyThread"):
+        self._DBPath = DBPath
+        self._inQueue = inQueue
+        self._outDict = outDict
+        self._stopEvent = Event()
+        self._thread = None
+        self._name = name
+
+    @staticmethod
+    def _wrapper(DBPath, inQueue, outDict, stopEvent):
+        connection = None
+        cursor = None
+
+        def dict_factory(cursor, row):
+            d = {}
+            for idx, col in enumerate(cursor.description):
+                d[col[0]] = row[idx]
+            return d
+
+        def _open(path):
+            nonlocal connection
+            nonlocal cursor
+
+            connection = sqlite3.connect(
+                path,
+                isolation_level=None,
+                detect_types=sqlite3.PARSE_DECLTYPES
+            )
+            connection.row_factory = dict_factory
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA page_size = 4096")
+            cursor = connection.cursor()
+        
+        _open(DBPath)
+
+        def _runQuery(token, query, values, operation):
+            if values:
+                if operation == "many":
+                    cursor.executemany(query, values)
+                else:
+                    cursor.execute(query, values)
+            else:
+                cursor.execute(query)
+            if operation == "lastrowid":
+                outDict[token] = cursor.lastrowid
+            if operation == "fetchone":
+                outDict[token] = cursor.fetchone()
+            if operation == "fetchall":
+                outDict[token] = cursor.fetchall()
+            if operation == "rowcount":
+                outDict[token] = cursor.rowcount
+            if operation is None:
+                outDict[token] = True
+
+        for token, query, values, operation in iter(inQueue.get, None):
+            if query:
+                if connection is not None:
+                    _runQuery(token, query, values, operation)
+                    if inQueue.empty():
+                        connection.commit()
+            else:
+                if operation == "remove":
+                    os.remove(DBPath)
+                if operation == "commit" and connection is not None:
+                    connection.commit()
+                if operation == "open":
+                    _open(DBPath)
+                if operation == "close" and connection is not None:
+                    connection.close()
+                    connection = None
+                outDict[token] = True
+
+    def run(self):
+        self._thread = Thread(
+            target=self._wrapper,
+            args=(
+                self._DBPath,
+                self._inQueue,
+                self._outDict,
+                self._stopEvent
+            ),
+            name=self._name
+        )
+        self._thread.start()
 
 
 class QueryDB():
@@ -29,38 +183,48 @@ class QueryDB():
         gameDB (str): A string representing the path of the DB to use."
     '''
 
-    DBPath = None
+    wInQueue = None
+    wOutDict = {}
+    rInQueue = None
+    rOutDict = {}
 
     def __init__(self):
-        self.connection = sqlite3.connect(self.DBPath)
-        self.connection.row_factory = sqlite3.Row
-        self.cursor = self.connection.cursor()
+        pass
 
-    def execute(self, query, values = None):
+    def execute(self, query, values=None, operation=None):
         '''Execute a query
 
         Args:
             query (str): The SQL statement
             values (iterable - optionnal): An iterable of parameters
+            operation (str): Representation of the returned value
         
         Notes:
             See [sqlite3.Cursor.execute](https://docs.python.org/3.7/library/sqlite3.html#sqlite3.Cursor.execute)
         '''
-        if values:
-            return self.cursor.execute(query, values)
-        return self.cursor.execute(query)
+        cmd = query.split(" ", 1)[0]
+        if cmd in ("open", "commit", "close"):
+            self._execute(self.wInQueue, self.wOutDict, "", values, cmd)
+            self._execute(self.rInQueue, self.rOutDict, "", values, cmd)
+        elif cmd == "remove":
+            self._execute(self.wInQueue, self.wOutDict, "", values, cmd)
+        else:
+            if cmd in ("CREATE", "INSERT", "UPDATE", "DELETE", "DROP", "VACUUM"):
+                result = self._execute(self.wInQueue, self.wOutDict, query, values, operation)
+            else:
+                result = self._execute(self.rInQueue, self.rOutDict, query, values, operation)
+            return result
     
-    def executemany(self, query, values):
-        '''Execute a query
-
-        Args:
-            query (str): The SQL statement
-            values (iterable): An iterable of iterables of parameters
-        
-        Notes:
-            See [sqlite3.Cursor.executemany](https://docs.python.org/3.7/library/sqlite3.html#sqlite3.Cursor.executemany)
-        '''
-        self.cursor.executemany(query, values)
+    @staticmethod
+    def _execute(inQueue, outDict, query, values, operation):
+        token = str(uuid.uuid4())
+        inQueue.put((token, query, values, operation), timeout=5)
+        try:
+            while True:
+                if token in outDict:
+                    return outDict[token]
+        finally:
+            del outDict[token]
         
     def create(self, query):
         '''Create tables in the DB
@@ -74,13 +238,16 @@ class QueryDB():
         else:
             self.execute(query)
     
-    def insert(self, table, columns, values):
+    def insert(self, table, columns=None, values=None, operation="lastrowid"):
         '''Insert values in a table (simple insert)
 
         Args:
             table (str): The name of the table
             columns (iterable): An iterable of columns where values will be inserted
-            values (iterable): An iterable of values (same number as columns)
+                or a dict {column: value} no values needed
+            values (iterable - optionnal): An iterable of values (same number as columns)
+                if columns is not a dict
+            operation (str): Representation of the returned value
 
         Notes:
             If one column is provided, do not forget a comma at the end
@@ -91,12 +258,12 @@ class QueryDB():
             table,
             ", ".join(columns),
         )
-        if type(values) is dict:
-            keys = values.keys()
-            query += "VALUES ({})".format(", ".join([":" + x for x in keys]))
+        if type(columns) is dict:
+            query += "VALUES ({})".format(", ".join([":" + x for x in columns]))
+            return self.execute(query, columns, operation)
         else:
             query += "VALUES ({})".format(", ".join(("?",) * len(values)))
-        self.execute(query, values)
+            return self.execute(query, values, operation)
     
     def insertmany(self, table, columns, values):
         '''Insert values in a table (insert iterable)
@@ -108,6 +275,7 @@ class QueryDB():
 
         Notes:
             The iterable of values could be provided as list/tuple or dict.
+            See [sqlite3.Cursor.executemany](https://docs.python.org/3.7/library/sqlite3.html#sqlite3.Cursor.executemany)
 
         '''
         query = "INSERT INTO {} ({}) ".format(
@@ -119,9 +287,9 @@ class QueryDB():
             query += "VALUES ({})".format(", ".join([":" + x for x in keys]))
         else:
             query += "VALUES ({})".format(", ".join(("?",) * len(columns)))
-        self.executemany(query , values)
+        self.execute(query , values, "many")
 
-    def select(self, table, columns = "*", where = None):
+    def select(self, table, columns = "*", where=None, operation="fetchall"):
         '''Select values in a table
 
         Args:
@@ -132,6 +300,7 @@ class QueryDB():
                 the format of "column == 'value'"
                 or dict {column: value} for multiple AND condition
                 if the column begin with ! the condition change from == to !=
+            operation (str): Representation of the returned value
 
         Notes:
             If one column is provided, do not forget a comma at the end
@@ -165,13 +334,13 @@ class QueryDB():
             query += "{} FROM {}".format(
                 ", ".join(columns),
                 table)
-        return self.execute(query)
+        return self.execute(query, operation=operation)
     
-    def selectone(self, table, columns = "*", where = None):
-        return self.select(table, columns, where).fetchone()
+    def selectone(self, table, columns="*", where=None):
+        return self.select(table, columns, where, "fetchone")
 
-    def selectall(self, table, columns = "*", where = None):
-        return self.select(table, columns, where).fetchall()
+    def selectall(self, table, columns="*", where=None):
+        return self.select(table, columns, where, "fetchall")
 
     def drop(self, table):
         '''Drop a table
@@ -187,37 +356,56 @@ class QueryDB():
 
         Notes:
             Must be donebefore closing otherwise data will be lost.
+        
+        TODO: Remove, autocommit is done in the thread
         '''
-        self.connection.commit()
+        self.execute("commit")
 
     def close(self):
         '''Close the connection to the DB
 
         Notes:
-            Do not forget to commit before closing.
+            Commit automatically before closing.
         '''
-        self.connection.close()
+        self.commit()
+        self.execute("close")
 
-class EveDB(QueryDB):
+    def update(self, tables, columns="*", where=None, operation=None):
+        '''Update values in a table
 
-    __instance = None
+        Args:
+            table (str): The name of the table
+            columns (iterable): An iterable of columns where values will be selected
+            where (str or dict - optionnal): Str for complete search condition in
+                the format of "column == 'value'"
+                or dict {column: value} for multiple AND condition
+            operation (str): Representation of the returned value
 
-    @classmethod
-    def getInstance(cls):
-        if cls.__instance is None:
-            cls.__instance = EveDB()
-        return cls.__instance
+        Notes:
+            If one column is provided, do not forget a comma at the end
+            ("column",) otherwise it will be taken as a string.
+        
+        TODO: Like select if the column begin with ! the condition change from == to !=
+        '''
+        query = "UPDATE {} ".format(tables)
+        query += "SET {} ".format(", ".join(["{} = '{}'".format(x, y) for x, y in columns.items()]))
+        query += "WHERE {}".format(" AND ".join(["{} = '{}'".format(x, y) for x, y in where.items()]))
+        return self.execute(query, operation=operation)
     
-    @classmethod
-    def reset(cls):
-        cls.__instance = None
+    def updatecount(self, tables, columns="*", where=None):
+        '''Update values in a table and return rowcount
+        '''
+        return self.update(tables, columns, where, "rowcount")
 
-    def __init__(self):
-        from config import getGameDB
-        self.DBPath = getGameDB()
-        super().__init__()
-    
-    def close(self):
-        super().close()
-        # When closing reset instance to avoid Error
-        self.reset()
+    def vacuum(self):
+        self.execute("VACUUM")
+
+    def open(self):
+        self.execute("open")
+
+    def remove(self):
+        self.close()
+        self.execute("remove")
+        self.open()
+
+

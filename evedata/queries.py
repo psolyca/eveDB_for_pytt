@@ -19,9 +19,12 @@
 # along with pytt.  If not, see <http://www.gnu.org/licenses/>.
 # ==============================================================================
 
-from service.queryDB import EveDB
+from service.queryDB import dbInstances
 
-eveDB = EveDB.getInstance()
+try:
+    eveDB = dbInstances["EveDB"]
+except KeyError:
+    pass
 
 def getMapIdFromName(itemName, whichID="itemID" ):
     return eveDB.selectone(

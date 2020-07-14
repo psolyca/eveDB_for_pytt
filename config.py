@@ -3,7 +3,7 @@ import sys
 import yaml
 
 pyttPath = None
-gameDB = None
+eveDBPath = None
 
 def getpyttRoot():
     if hasattr(sys, '_MEIPASS'):
@@ -11,12 +11,17 @@ def getpyttRoot():
     base = __file__
     return os.path.dirname(os.path.realpath(os.path.abspath(base)))
 
-def getGameDB():
-    return gameDB
+def getEveDBPath():
+    return eveDBPath
+
+def getDBPathes():
+    return {
+        "EveDB": eveDBPath
+    }
 
 def defPaths():
     global pyttPath
-    global gameDB
+    global eveDBPath
 
     print("Configuring pytt")
 
@@ -28,5 +33,9 @@ def defPaths():
     # The database where the static EVE data from the datadump is kept.
     # This is not the standard sqlite datadump but a modified version created by
     # yamlloader maintenance script
-    if gameDB is None:
-        gameDB = os.path.join(pyttPath, "resources", "eve.db")
+    if eveDBPath is None:
+        eveDBPath = os.path.join(pyttPath, "resources", "eve.db")
+        try:
+            os.mkdir(os.path.join(pyttPath, "resources"))
+        except FileExistsError:
+            pass

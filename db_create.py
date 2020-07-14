@@ -19,18 +19,20 @@
 # along with pytt.  If not, see <http://www.gnu.org/licenses/>.
 # ==============================================================================
 
+import config
 
-import sys
-
-from config import defPaths
-from evedata import create_db
-
+# print("Starting pytt DB creation")
+config.defPaths()
 
 if __name__ == "__main__":
 
-    print("Starting pytt DB creation")
-    defPaths()
+    print("Launching service processes.")
+    import service.queryDB
+    service.queryDB.startDBProcess()
 
+    from evedata import create_db
     create_db()
+
+    import sys
     sys.exit()
 
